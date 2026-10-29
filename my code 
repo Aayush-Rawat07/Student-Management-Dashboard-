@@ -1,0 +1,707 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+/* ═══════════════════════════════════════════════
+   Constants
+═══════════════════════════════════════════════ */
+#define MAX_SUBJECTS      5
+#define MAX_MARKS         100.0f
+#define INITIAL_CAPACITY  10
+#define SAVE_FILE         "students.dat"
+
+const char *SUBJECT_NAMES[MAX_SUBJECTS] = {
+    "Mathematics",
+    "Physics",
+    "Chemistry",
+    "English",
+    "Computer Sci"
+};
+
+/* ═══════════════════════════════════════════════
+   Data Structures
+═══════════════════════════════════════════════ */
+struct Student {
+    char  name[50];
+    int   rollNumber;
+    float marks[MAX_SUBJECTS];
+    int   rank;
+};
+
+/* Dynamic array — grows automatically with realloc */
+struct StudentDB {
+    struct Student *data;
+    int             count;
+    int             capacity;
+};
+
+/* ═══════════════════════════════════════════════
+   Dynamic Array Helpers
+═══════════════════════════════════════════════ */
+void initDB(struct StudentDB *db) {
+    db->capacity = INITIAL_CAPACITY;
+    db->count    = 0;
+    db->data     = (struct Student *)malloc(db->capacity * sizeof(struct Student));
+    if (!db->data) { fprintf(stderr, "Fatal: malloc failed\n"); exit(1); }
+}
+
+void growDB(struct StudentDB *db) {
+    db->capacity *= 2;
+    db->data = (struct Student *)realloc(db->data, db->capacity * sizeof(struct Student));
+    if (!db->data) { fprintf(stderr, "Fatal: realloc failed\n"); exit(1); }
+}
+
+void freeDB(struct StudentDB *db) {
+    free(db->data);
+    db->data     = NULL;
+    db->count    = 0;
+    db->capacity = 0;
+}
+
+/* ═══════════════════════════════════════════════
+   Utility Helpers
+═══════════════════════════════════════════════ */
+void clearInputBuffer(void) {
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF);
+}
+
+/* Returns 1 if rollNumber already exists, skipping index excludeIdx (-1 = skip none) */
+int rollNumberExists(struct StudentDB *db, int rollNumber, int excludeIdx) {
+    for (int i = 0; i < db->count; i++) {
+        if (i == excludeIdx) continue;
+        if (db->data[i].rollNumber == rollNumber) return 1;
+    }
+    return 0;
+}
+
+void getGrade(float percentage, char *grade) {
+    if      (percentage >= 90) strcpy(grade, "A+");
+    else if (percentage >= 80) strcpy(grade, "A");
+    else if (percentage >= 70) strcpy(grade, "B");
+    else if (percentage >= 60) strcpy(grade, "C");
+    else if (percentage >= 50) strcpy(grade, "D");
+    else                       strcpy(grade, "F");
+}
+
+/* ═══════════════════════════════════════════════
+   RECURSIVE FUNCTIONS
+═══════════════════════════════════════════════ */
+
+/*
+ * 1. Recursive Total Marks
+ *    Adds marks[index] + marks[index+1] + ... recursively.
+ *    Base case: when index reaches MAX_SUBJECTS, return 0.
+ */
+float recursiveTotalMarks(float *marks, int index) {
+    if (index == MAX_SUBJECTS) return 0.0f;
+    return marks[index] + recursiveTotalMarks(marks, index + 1);
+}
+
+/*
+ * 2. Recursive Display
+ *    Prints one student card then calls itself for the next index.
+ *    Base case: when index reaches count, stop.
+ */
+void recursiveDisplay(struct Student *students, int index, int count) {
+    if (index >= count) return;
+
+    float total      = recursiveTotalMarks(students[index].marks, 0);
+    float percentage = (total / (MAX_SUBJECTS * MAX_MARKS)) * 100.0f;
+    char  grade[10];
+    getGrade(percentage, grade);
+
+    printf("\n +------------------------------------------------+\n");
+    printf(" | Rank #%-3d   %-36s|\n", students[index].rank, students[index].name);
+    printf(" +------------------------------------------------+\n");
+    printf(" | Roll Number  : %-31d |\n", students[index].rollNumber);
+
+    for (int j = 0; j < MAX_SUBJECTS; j++) {
+        printf(" |  %-14s : %-31.2f |\n", SUBJECT_NAMES[j], students[index].marks[j]);
+    }
+
+    printf(" +------------------------------------------------+\n");
+    printf(" | Total Marks  : %-7.2f / 500                  |\n", total);
+    printf(" | Percentage   : %-7.2f%%                       |\n", percentage);
+    printf(" | Grade        : %-7s                        |\n", grade);
+    printf(" +------------------------------------------------+\n");
+
+    /* recursive call for next student */
+    recursiveDisplay(students, index + 1, count);
+}
+
+/*
+ * 3. Recursive Binary Search (by roll number)
+ *    Array MUST be sorted by rollNumber before calling.
+ *    Returns the index of the match, or -1 if not found.
+ */
+int recursiveBinarySearch(struct Student *students, int low, int high, int roll) {
+    if (low > high) return -1;                          /* base: not found */
+    int mid = low + (high - low) / 2;
+    if (students[mid].rollNumber == roll) return mid;   /* base: found     */
+    if (students[mid].rollNumber < roll)
+        return recursiveBinarySearch(students, mid + 1, high, roll);
+    return     recursiveBinarySearch(students, low,    mid - 1, roll);
+}
+
+/*
+ * 4. Recursive Linear Search (by name, case-insensitive substring)
+ *    Returns index of first match, or -1.
+ */
+int recursiveNameSearch(struct Student *students, int index, int count, const char *query) {
+    if (index == count) return -1;                      /* base: not found */
+
+    char haystack[50], needle[50];
+    strncpy(haystack, students[index].name, 49); haystack[49] = '\0';
+    strncpy(needle,   query,               49); needle[49]   = '\0';
+    for (int i = 0; haystack[i]; i++) haystack[i] = (char)tolower((unsigned char)haystack[i]);
+    for (int i = 0; needle[i];   i++) needle[i]   = (char)tolower((unsigned char)needle[i]);
+
+    if (strstr(haystack, needle) != NULL) return index; /* base: found    */
+    return recursiveNameSearch(students, index + 1, count, query);
+}
+
+/*
+ * 5. Recursive Maximum Finder (highest total marks)
+ *    Compares current index against running maxIdx.
+ */
+int recursiveFindMax(struct Student *students, int index, int count, int maxIdx) {
+    if (index == count) return maxIdx;                  /* base case */
+    float curTotal = recursiveTotalMarks(students[index].marks, 0);
+    float maxTotal = recursiveTotalMarks(students[maxIdx].marks, 0);
+    int   newMax   = (curTotal > maxTotal) ? index : maxIdx;
+    return recursiveFindMax(students, index + 1, count, newMax);
+}
+
+/*
+ * 6. Recursive Minimum Finder (lowest total marks)
+ */
+int recursiveFindMin(struct Student *students, int index, int count, int minIdx) {
+    if (index == count) return minIdx;                  /* base case */
+    float curTotal = recursiveTotalMarks(students[index].marks, 0);
+    float minTotal = recursiveTotalMarks(students[minIdx].marks, 0);
+    int   newMin   = (curTotal < minTotal) ? index : minIdx;
+    return recursiveFindMin(students, index + 1, count, newMin);
+}
+
+/*
+ * 7. Recursive Class Sum (sum of all students' total marks)
+ */
+float recursiveClassSum(struct Student *students, int index, int count) {
+    if (index == count) return 0.0f;                    /* base case */
+    return recursiveTotalMarks(students[index].marks, 0)
+           + recursiveClassSum(students, index + 1, count);
+}
+
+/*
+ * 8. Recursive Pass / Fail Counter (pass threshold = 50%)
+ */
+void recursivePassFail(struct Student *students, int index, int count, int *pass, int *fail) {
+    if (index == count) return;                         /* base case */
+    float pct = (recursiveTotalMarks(students[index].marks, 0)
+                 / (MAX_SUBJECTS * MAX_MARKS)) * 100.0f;
+    if (pct >= 50.0f) (*pass)++; else (*fail)++;
+    recursivePassFail(students, index + 1, count, pass, fail);
+}
+
+/*
+ * 9. Recursive Subject Average Sum (across all students for one subject)
+ */
+float recursiveSubjectSum(struct Student *students, int index, int count, int subjectIdx) {
+    if (index == count) return 0.0f;                    /* base case */
+    return students[index].marks[subjectIdx]
+           + recursiveSubjectSum(students, index + 1, count, subjectIdx);
+}
+
+/*
+ * 10. Recursive QuickSort — descending by total marks
+ *     Partition + two recursive calls on sub-arrays.
+ */
+void swapStudents(struct Student *a, struct Student *b) {
+    struct Student tmp = *a; *a = *b; *b = tmp;
+}
+
+int partitionByMarks(struct Student *students, int low, int high) {
+    float pivot = recursiveTotalMarks(students[high].marks, 0);
+    int   i     = low - 1;
+    for (int j = low; j < high; j++) {
+        if (recursiveTotalMarks(students[j].marks, 0) > pivot) {
+            i++;
+            swapStudents(&students[i], &students[j]);
+        }
+    }
+    swapStudents(&students[i + 1], &students[high]);
+    return i + 1;
+}
+
+void recursiveQuickSortByMarks(struct Student *students, int low, int high) {
+    if (low >= high) return;                            /* base case */
+    int pi = partitionByMarks(students, low, high);
+    recursiveQuickSortByMarks(students, low,    pi - 1);
+    recursiveQuickSortByMarks(students, pi + 1, high);
+}
+
+/*
+ * 11. Recursive QuickSort — ascending by roll number
+ */
+int partitionByRoll(struct Student *students, int low, int high) {
+    int pivot = students[high].rollNumber;
+    int i     = low - 1;
+    for (int j = low; j < high; j++) {
+        if (students[j].rollNumber < pivot) {
+            i++;
+            swapStudents(&students[i], &students[j]);
+        }
+    }
+    swapStudents(&students[i + 1], &students[high]);
+    return i + 1;
+}
+
+void recursiveQuickSortByRoll(struct Student *students, int low, int high) {
+    if (low >= high) return;                            /* base case */
+    int pi = partitionByRoll(students, low, high);
+    recursiveQuickSortByRoll(students, low,    pi - 1);
+    recursiveQuickSortByRoll(students, pi + 1, high);
+}
+
+/*
+ * 12. Recursive Grade Distribution Counter
+ *     Counts how many students fall into each grade bucket.
+ */
+void recursiveGradeDist(struct Student *students, int index, int count,
+                        int *aPlus, int *a, int *b, int *c, int *d, int *f) {
+    if (index == count) return;                         /* base case */
+    float pct = (recursiveTotalMarks(students[index].marks, 0)
+                 / (MAX_SUBJECTS * MAX_MARKS)) * 100.0f;
+    char g[10]; getGrade(pct, g);
+    if      (strcmp(g, "A+") == 0) (*aPlus)++;
+    else if (strcmp(g, "A")  == 0) (*a)++;
+    else if (strcmp(g, "B")  == 0) (*b)++;
+    else if (strcmp(g, "C")  == 0) (*c)++;
+    else if (strcmp(g, "D")  == 0) (*d)++;
+    else                           (*f)++;
+    recursiveGradeDist(students, index + 1, count, aPlus, a, b, c, d, f);
+}
+
+/* ═══════════════════════════════════════════════
+   Rank Assignment
+═══════════════════════════════════════════════ */
+void assignRanks(struct Student *students, int count) {
+    for (int i = 0; i < count; i++) {
+        float myTotal = recursiveTotalMarks(students[i].marks, 0);
+        int rank = 1;
+        for (int j = 0; j < count; j++) {
+            if (i == j) continue;
+            if (recursiveTotalMarks(students[j].marks, 0) > myTotal) rank++;
+        }
+        students[i].rank = rank;
+    }
+}
+
+/* ═══════════════════════════════════════════════
+   File Persistence (Binary)
+═══════════════════════════════════════════════ */
+void saveToFile(struct StudentDB *db) {
+    FILE *fp = fopen(SAVE_FILE, "wb");
+    if (!fp) { printf("   [!] Could not save to file.\n"); return; }
+    fwrite(&db->count, sizeof(int),            1,         fp);
+    fwrite(db->data,   sizeof(struct Student), db->count, fp);
+    fclose(fp);
+    printf("   [OK] Data saved to '%s'.\n", SAVE_FILE);
+}
+
+void loadFromFile(struct StudentDB *db) {
+    FILE *fp = fopen(SAVE_FILE, "rb");
+    if (!fp) { printf("   [i] No save file found. Starting fresh.\n"); return; }
+    int count = 0;
+    fread(&count, sizeof(int), 1, fp);
+    while (db->capacity < count) growDB(db);
+    fread(db->data, sizeof(struct Student), count, fp);
+    db->count = count;
+    fclose(fp);
+    assignRanks(db->data, db->count);
+    printf("   [OK] Loaded %d student(s) from '%s'.\n", count, SAVE_FILE);
+}
+
+/* ═══════════════════════════════════════════════
+   Input Helper
+═══════════════════════════════════════════════ */
+float readValidMark(const char *subjectName) {
+    float mark;
+    while (1) {
+        printf("   Enter marks for %-14s (0-100): ", subjectName);
+        if (scanf("%f", &mark) == 1 && mark >= 0.0f && mark <= MAX_MARKS)
+            return mark;
+        printf("   [!] Invalid! Must be 0-100.\n");
+        clearInputBuffer();
+    }
+}
+
+/* ═══════════════════════════════════════════════
+   Menu
+═══════════════════════════════════════════════ */
+void displayMenu(int count, int capacity) {
+    printf("\n  +==========================================+\n");
+    printf("  |      GRADE MANAGEMENT SYSTEM  v2.0      |\n");
+    printf("  |  Students: %-4d  |  Capacity: %-4d       |\n", count, capacity);
+    printf("  +==========================================+\n");
+    printf("  |  1.  Add Student                        |\n");
+    printf("  |  2.  View All Students                  |\n");
+    printf("  |  3.  Update Student                     |\n");
+    printf("  |  4.  Delete Student                     |\n");
+    printf("  |  5.  Search Student                     |\n");
+    printf("  |  6.  Sort Students                      |\n");
+    printf("  |  7.  Class Statistics                   |\n");
+    printf("  |  8.  Subject-wise Analysis              |\n");
+    printf("  |  9.  Save Data                          |\n");
+    printf("  |  10. Load Data                          |\n");
+    printf("  |  0.  Exit                               |\n");
+    printf("  +==========================================+\n");
+}
+
+/* ═══════════════════════════════════════════════
+   Feature: Add Student
+═══════════════════════════════════════════════ */
+void addStudent(struct StudentDB *db) {
+    if (db->count >= db->capacity) growDB(db);  /* auto-grow */
+
+    struct Student *s = &db->data[db->count];
+
+    /* Name */
+    clearInputBuffer();
+    printf("   Enter student name: ");
+    fgets(s->name, sizeof(s->name), stdin);
+    s->name[strcspn(s->name, "\n")] = '\0';
+    if (strlen(s->name) == 0) {
+        printf("   [!] Name cannot be empty.\n"); return;
+    }
+
+    /* Roll Number — validated and unique */
+    int roll;
+    while (1) {
+        printf("   Enter roll number: ");
+        if (scanf("%d", &roll) != 1) {
+            printf("   [!] Invalid input.\n"); clearInputBuffer(); continue;
+        }
+        if (roll <= 0) { printf("   [!] Must be positive.\n"); continue; }
+        if (rollNumberExists(db, roll, -1)) {
+            printf("   [!] Roll %d already exists.\n", roll); continue;
+        }
+        break;
+    }
+    s->rollNumber = roll;
+
+    /* Subject marks — each validated 0-100 */
+    for (int i = 0; i < MAX_SUBJECTS; i++)
+        s->marks[i] = readValidMark(SUBJECT_NAMES[i]);
+
+    db->count++;
+    assignRanks(db->data, db->count);
+    printf("   [OK] Student added! (Total: %d, Capacity: %d)\n", db->count, db->capacity);
+}
+
+/* ═══════════════════════════════════════════════
+   Feature: View All Students (uses recursiveDisplay)
+═══════════════════════════════════════════════ */
+void viewStudents(struct StudentDB *db) {
+    if (db->count == 0) {
+        printf("   [i] No students to display.\n"); return;
+    }
+    printf("\n  Displaying %d student(s):\n", db->count);
+    recursiveDisplay(db->data, 0, db->count);
+}
+
+/* ═══════════════════════════════════════════════
+   Feature: Update Student
+═══════════════════════════════════════════════ */
+void updateStudent(struct StudentDB *db) {
+    if (db->count == 0) {
+        printf("   [i] No students to update.\n"); return;
+    }
+    int roll;
+    printf("   Enter roll number to update: ");
+    if (scanf("%d", &roll) != 1) { clearInputBuffer(); return; }
+
+    int idx = -1;
+    for (int i = 0; i < db->count; i++)
+        if (db->data[i].rollNumber == roll) { idx = i; break; }
+
+    if (idx == -1) {
+        printf("   [!] Roll %d not found.\n", roll); return;
+    }
+
+    struct Student *s = &db->data[idx];
+    printf("   Updating: %s\n", s->name);
+
+    clearInputBuffer();
+    printf("   New name: ");
+    fgets(s->name, sizeof(s->name), stdin);
+    s->name[strcspn(s->name, "\n")] = '\0';
+    if (strlen(s->name) == 0) {
+        printf("   [!] Name cannot be empty. Update cancelled.\n"); return;
+    }
+
+    int newRoll;
+    while (1) {
+        printf("   New roll number: ");
+        if (scanf("%d", &newRoll) != 1) { clearInputBuffer(); continue; }
+        if (newRoll <= 0) { printf("   [!] Must be positive.\n"); continue; }
+        if (newRoll != roll && rollNumberExists(db, newRoll, idx)) {
+            printf("   [!] Roll %d taken by another student.\n", newRoll); continue;
+        }
+        break;
+    }
+    s->rollNumber = newRoll;
+
+    for (int j = 0; j < MAX_SUBJECTS; j++)
+        s->marks[j] = readValidMark(SUBJECT_NAMES[j]);
+
+    assignRanks(db->data, db->count);
+    printf("   [OK] Student updated successfully!\n");
+}
+
+/* ═══════════════════════════════════════════════
+   Feature: Delete Student
+═══════════════════════════════════════════════ */
+void deleteStudent(struct StudentDB *db) {
+    if (db->count == 0) {
+        printf("   [i] No students to delete.\n"); return;
+    }
+    int roll;
+    printf("   Enter roll number to delete: ");
+    if (scanf("%d", &roll) != 1) { clearInputBuffer(); return; }
+
+    for (int i = 0; i < db->count; i++) {
+        if (db->data[i].rollNumber == roll) {
+            char confirm;
+            printf("   Delete '%s'? (y/n): ", db->data[i].name);
+            clearInputBuffer();
+            scanf("%c", &confirm);
+            if (confirm != 'y' && confirm != 'Y') {
+                printf("   Deletion cancelled.\n"); return;
+            }
+            for (int j = i; j < db->count - 1; j++)
+                db->data[j] = db->data[j + 1];
+            db->count--;
+            assignRanks(db->data, db->count);
+            printf("   [OK] Deleted. (%d remaining)\n", db->count);
+            return;
+        }
+    }
+    printf("   [!] Roll %d not found.\n", roll);
+}
+
+/* ═══════════════════════════════════════════════
+   Feature: Search Student
+   -- Roll : sort by roll then recursiveBinarySearch
+   -- Name : recursiveNameSearch (substring, case-insensitive)
+═══════════════════════════════════════════════ */
+void searchStudent(struct StudentDB *db) {
+    if (db->count == 0) {
+        printf("   [i] No students to search.\n"); return;
+    }
+    printf("\n  Search by:\n");
+    printf("    1. Roll Number  (Recursive Binary Search)\n");
+    printf("    2. Name         (Recursive Linear Search)\n");
+    printf("  Choice: ");
+
+    int choice;
+    if (scanf("%d", &choice) != 1) { clearInputBuffer(); return; }
+
+    if (choice == 1) {
+        /* Binary search requires sorted array */
+        recursiveQuickSortByRoll(db->data, 0, db->count - 1);
+        assignRanks(db->data, db->count);
+
+        int roll;
+        printf("   Enter roll number: ");
+        if (scanf("%d", &roll) != 1) { clearInputBuffer(); return; }
+
+        int idx = recursiveBinarySearch(db->data, 0, db->count - 1, roll);
+        if (idx == -1)
+            printf("   [!] Roll %d not found.\n", roll);
+        else {
+            printf("   [OK] Found via Recursive Binary Search!\n");
+            recursiveDisplay(db->data, idx, idx + 1);
+        }
+
+    } else if (choice == 2) {
+        clearInputBuffer();
+        char query[50];
+        printf("   Enter name (or part of it): ");
+        fgets(query, sizeof(query), stdin);
+        query[strcspn(query, "\n")] = '\0';
+
+        int idx = recursiveNameSearch(db->data, 0, db->count, query);
+        if (idx == -1)
+            printf("   [!] No student found matching '%s'.\n", query);
+        else {
+            printf("   [OK] Found via Recursive Linear Search!\n");
+            recursiveDisplay(db->data, idx, idx + 1);
+        }
+    } else {
+        printf("   [!] Invalid option.\n");
+    }
+}
+
+/* ═══════════════════════════════════════════════
+   Feature: Sort Students (Recursive QuickSort)
+═══════════════════════════════════════════════ */
+void sortStudents(struct StudentDB *db) {
+    if (db->count < 2) {
+        printf("   [i] Need at least 2 students to sort.\n"); return;
+    }
+    printf("\n  Sort by:\n");
+    printf("    1. Total Marks  (Descending) -- Recursive QuickSort\n");
+    printf("    2. Roll Number  (Ascending)  -- Recursive QuickSort\n");
+    printf("  Choice: ");
+
+    int choice;
+    if (scanf("%d", &choice) != 1) { clearInputBuffer(); return; }
+
+    if (choice == 1) {
+        recursiveQuickSortByMarks(db->data, 0, db->count - 1);
+        assignRanks(db->data, db->count);
+        printf("   [OK] Sorted by total marks (highest first).\n");
+    } else if (choice == 2) {
+        recursiveQuickSortByRoll(db->data, 0, db->count - 1);
+        assignRanks(db->data, db->count);
+        printf("   [OK] Sorted by roll number (ascending).\n");
+    } else {
+        printf("   [!] Invalid option.\n");
+    }
+}
+
+/* ═══════════════════════════════════════════════
+   Feature: Class Statistics
+   Uses: recursiveClassSum, recursiveFindMax/Min,
+         recursivePassFail, recursiveGradeDist
+═══════════════════════════════════════════════ */
+void classStatistics(struct StudentDB *db) {
+    if (db->count == 0) {
+        printf("   [i] No data available.\n"); return;
+    }
+
+    float totalSum = recursiveClassSum(db->data, 0, db->count);
+    float classAvg = totalSum / db->count;
+    float avgPct   = (classAvg / (MAX_SUBJECTS * MAX_MARKS)) * 100.0f;
+    char  avgGrade[10]; getGrade(avgPct, avgGrade);
+
+    int topIdx = recursiveFindMax(db->data, 1, db->count, 0);
+    int lowIdx = recursiveFindMin(db->data, 1, db->count, 0);
+
+    int pass = 0, fail = 0;
+    recursivePassFail(db->data, 0, db->count, &pass, &fail);
+
+    int aPlus = 0, a = 0, b = 0, c = 0, d = 0, f = 0;
+    recursiveGradeDist(db->data, 0, db->count, &aPlus, &a, &b, &c, &d, &f);
+
+    printf("\n  +=======================================+\n");
+    printf("  |          CLASS STATISTICS             |\n");
+    printf("  +=======================================+\n");
+    printf("  |  Total Students : %-20d |\n", db->count);
+    printf("  |  Class Average  : %-7.2f / 500         |\n", classAvg);
+    printf("  |  Avg Percentage : %-7.2f%%              |\n", avgPct);
+    printf("  |  Class Grade    : %-20s |\n", avgGrade);
+    printf("  +---------------------------------------+\n");
+    printf("  |  [TOP] %-31s |\n", db->data[topIdx].name);
+    printf("  |        Total: %-7.2f / 500             |\n",
+           recursiveTotalMarks(db->data[topIdx].marks, 0));
+    printf("  +---------------------------------------+\n");
+    printf("  |  [LOW] %-31s |\n", db->data[lowIdx].name);
+    printf("  |        Total: %-7.2f / 500             |\n",
+           recursiveTotalMarks(db->data[lowIdx].marks, 0));
+    printf("  +---------------------------------------+\n");
+    printf("  |  Passed         : %-20d |\n", pass);
+    printf("  |  Failed         : %-20d |\n", fail);
+    printf("  +---------------------------------------+\n");
+    printf("  |  Grade Distribution:                  |\n");
+    printf("  |   A+ (>=90%%)   : %-20d |\n", aPlus);
+    printf("  |   A  (>=80%%)   : %-20d |\n", a);
+    printf("  |   B  (>=70%%)   : %-20d |\n", b);
+    printf("  |   C  (>=60%%)   : %-20d |\n", c);
+    printf("  |   D  (>=50%%)   : %-20d |\n", d);
+    printf("  |   F  (<50%%)    : %-20d |\n", f);
+    printf("  +=======================================+\n");
+}
+
+/* ═══════════════════════════════════════════════
+   Feature: Subject-wise Analysis
+   Uses: recursiveSubjectSum
+═══════════════════════════════════════════════ */
+void subjectAnalysis(struct StudentDB *db) {
+    if (db->count == 0) {
+        printf("   [i] No data for analysis.\n"); return;
+    }
+    printf("\n  +=============================================+\n");
+    printf("  |         SUBJECT-WISE ANALYSIS               |\n");
+    printf("  +=============================================+\n");
+
+    for (int s = 0; s < MAX_SUBJECTS; s++) {
+        float sum = recursiveSubjectSum(db->data, 0, db->count, s);
+        float avg = sum / db->count;
+
+        int maxIdx = 0, minIdx = 0;
+        for (int i = 1; i < db->count; i++) {
+            if (db->data[i].marks[s] > db->data[maxIdx].marks[s]) maxIdx = i;
+            if (db->data[i].marks[s] < db->data[minIdx].marks[s]) minIdx = i;
+        }
+
+        printf("  |  %-14s                              |\n", SUBJECT_NAMES[s]);
+        printf("  |   Class Avg : %-6.2f                        |\n", avg);
+        printf("  |   Highest   : %-6.2f  (%-20s) |\n",
+               db->data[maxIdx].marks[s], db->data[maxIdx].name);
+        printf("  |   Lowest    : %-6.2f  (%-20s) |\n",
+               db->data[minIdx].marks[s], db->data[minIdx].name);
+        if (s < MAX_SUBJECTS - 1)
+            printf("  +---------------------------------------------+\n");
+    }
+    printf("  +=============================================+\n");
+}
+
+/* ═══════════════════════════════════════════════
+   MAIN
+═══════════════════════════════════════════════ */
+int main(void) {
+    printf("\n  +==========================================+\n");
+    printf("  |      GRADE MANAGEMENT SYSTEM  v2.0      |\n");
+    printf("  |   Dynamic Memory  |  Recursive Logic    |\n");
+    printf("  +==========================================+\n");
+
+    struct StudentDB db;
+    initDB(&db);
+    loadFromFile(&db);  /* auto-load saved data on startup */
+
+    int choice;
+    while (1) {
+        displayMenu(db.count, db.capacity);
+        printf("  Enter your choice: ");
+
+        if (scanf("%d", &choice) != 1) {
+            printf("  [!] Invalid input. Enter a number 0-10.\n");
+            clearInputBuffer();
+            continue;
+        }
+
+        switch (choice) {
+            case 1:  addStudent(&db);       break;
+            case 2:  viewStudents(&db);     break;
+            case 3:  updateStudent(&db);    break;
+            case 4:  deleteStudent(&db);    break;
+            case 5:  searchStudent(&db);    break;
+            case 6:  sortStudents(&db);     break;
+            case 7:  classStatistics(&db);  break;
+            case 8:  subjectAnalysis(&db);  break;
+            case 9:  saveToFile(&db);       break;
+            case 10: loadFromFile(&db);     break;
+            case 0:
+                saveToFile(&db);
+                freeDB(&db);
+                printf("\n  Data auto-saved. Goodbye!\n\n");
+                return 0;
+            default:
+                printf("  [!] Invalid choice. Enter 0-10.\n");
+        }
+    }
+}
